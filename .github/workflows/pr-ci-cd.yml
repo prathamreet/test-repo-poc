@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [ main ]
     types: [ opened, synchronize, reopened ]
+  workflow_dispatch:
 
 jobs:
   # -----------------------------------------------------------------
@@ -46,11 +47,11 @@ jobs:
       - name: Validate Cloud & Infrastructure
         id: cloud_check
         run: |
-          npm run simulate-cloud-fail
+          npm run validate-cloud
           # ---------------------------------------------------------
           # POC TESTING:
-          # To simulate a cloud failure and trigger the agent,
-          # change the line above to: npm run simulate-cloud-fail
+          # On PR test branches, change the line above to:
+          # npm run simulate-cloud-fail
           # ---------------------------------------------------------
 
   # -----------------------------------------------------------------
@@ -65,43 +66,69 @@ jobs:
       needs.lint-and-unit-tests.result == 'success' &&
       needs.cloud-validation.result == 'failure'
     steps:
-      - name: Dispatch Webhook to AWS DevOps Agent
+      - name: Dispatch Signed Webhook to AWS DevOps Agent
         env:
           DEVOPS_AGENT_WEBHOOK_URL: ${{ secrets.DEVOPS_AGENT_WEBHOOK_URL }}
           DEVOPS_AGENT_WEBHOOK_SECRET: ${{ secrets.DEVOPS_AGENT_WEBHOOK_SECRET }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SERVICE_NAME: ${{ github.event.repository.name }}
         run: |
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          PR_NUM="${{ github.event.pull_request.number }}"
-          PR_URL="${{ github.event.pull_request.html_url }}"
-          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python3 - << 'EOF'
+          import os, json, hmac, hashlib, base64, urllib.request, datetime
 
-          PAYLOAD=$(cat <<EOF
-          {
-            "eventType": "incident",
-            "incidentId": "gh-pr-${PR_NUM}-${{ github.run_id }}",
-            "action": "created",
-            "priority": "HIGH",
-            "title": "Cloud Validation Failed on PR #${PR_NUM}: ${{ github.event.pull_request.title }}",
-            "description": "PR #${PR_NUM} targeting main passed lint and unit tests, but failed during cloud infrastructure validation. Please inspect AWS telemetry, CloudWatch logs, CloudFormation/CDK events, and IAM permissions. Workflow: ${RUN_URL}. PR: ${PR_URL}",
-            "timestamp": "${TIMESTAMP}",
-            "service": "${{ github.event.repository.name }}",
-            "data": {
-              "metadata": {
-                "repository": "${{ github.repository }}",
-                "pr_number": "${PR_NUM}",
-                "pr_url": "${PR_URL}",
-                "commit": "${{ github.event.pull_request.head.sha }}",
-                "branch": "${{ github.head_ref }}",
-                "target_branch": "${{ github.base_ref }}",
-                "run_id": "${{ github.run_id }}"
+          url = os.environ.get('DEVOPS_AGENT_WEBHOOK_URL', '').strip()
+          secret = os.environ.get('DEVOPS_AGENT_WEBHOOK_SECRET', '').strip()
+
+          if not url or not secret:
+              print("Error: DEVOPS_AGENT_WEBHOOK_URL or DEVOPS_AGENT_WEBHOOK_SECRET is empty.")
+              exit(1)
+
+          timestamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+          pr_num = os.environ.get('PR_NUM') or 'manual'
+          pr_title = os.environ.get('PR_TITLE') or 'Manual Trigger'
+          commit_sha = os.environ.get('COMMIT_SHA') or os.environ.get('GITHUB_SHA', '')
+
+          payload_dict = {
+              "eventType": "incident",
+              "incidentId": f"gh-pr-{pr_num}-{os.environ['GITHUB_RUN_ID']}",
+              "action": "created",
+              "priority": "HIGH",
+              "title": f"Cloud Validation Failed on PR #{pr_num}: {pr_title}",
+              "description": f"Cloud infrastructure validation failed on PR #{pr_num}. Investigate AWS telemetry, CloudWatch logs, and PR commit {commit_sha}. Workflow: {os.environ['RUN_URL']}",
+              "timestamp": timestamp,
+              "service": os.environ.get('SERVICE_NAME', 'test-repo-poc'),
+              "data": {
+                  "metadata": {
+                      "repository": os.environ['GITHUB_REPOSITORY'],
+                      "pr_number": pr_num,
+                      "commit": commit_sha,
+                      "run_id": os.environ['GITHUB_RUN_ID']
+                  }
               }
-            }
           }
-          EOF
-          )
 
-          echo "Dispatching failure triage to AWS DevOps Agent for PR #${PR_NUM}..."
-          curl -s -X POST "$DEVOPS_AGENT_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $DEVOPS_AGENT_WEBHOOK_SECRET" \
-            -d "$PAYLOAD"
+          payload = json.dumps(payload_dict)
+          sign_input = f"{timestamp}:{payload}"
+          signature = base64.b64encode(hmac.new(secret.encode('utf-8'), sign_input.encode('utf-8'), hashlib.sha256).digest()).decode('utf-8')
+
+          headers = {
+              'Content-Type': 'application/json',
+              'x-amzn-event-timestamp': timestamp,
+              'x-amzn-event-signature': signature
+          }
+
+          print(f"Sending HMAC-signed payload to AWS DevOps Agent for PR #{pr_num}...")
+          req = urllib.request.Request(url, data=payload.encode('utf-8'), headers=headers, method='POST')
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  print(f"Success! AWS DevOps Agent Webhook Accepted: HTTP {resp.status}")
+                  response_body = resp.read().decode('utf-8')
+                  print(f"Response: {response_body}")
+          except urllib.error.HTTPError as e:
+              err_text = e.read().decode('utf-8')
+              print(f"HTTP Error {e.code}: {err_text}")
+              exit(1)
+          EOF
