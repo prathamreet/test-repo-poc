@@ -46,7 +46,7 @@ jobs:
       - name: Validate Cloud & Infrastructure
         id: cloud_check
         run: |
-          npm run validate-cloud
+          npm run simulate-cloud-fail
           # ---------------------------------------------------------
           # POC TESTING:
           # To simulate a cloud failure and trigger the agent,
