@@ -1,0 +1,14 @@
+{
+  "name": "test-repo-poc",
+  "version": "1.0.0",
+  "description": "POC repository for AWS DevOps Agent GitHub PR failure triage",
+  "main": "index.js",
+  "scripts": {
+    "lint": "node -e 'console.log(\"✔ Lint passed.\")'",
+    "test": "node -e 'console.log(\"✔ Unit tests passed.\")'",
+    "validate-cloud": "node -e 'console.log(\"✔ Cloud validation check passed.\")'",
+    "simulate-lint-fail": "node -e 'console.error(\"✖ Simulated lint failure\"); process.exit(1);'",
+    "simulate-cloud-fail": "node -e 'console.error(\"✖ Simulated AWS Cloud deployment failure: AccessDenied on IAM role\"); process.exit(1);'"
+  }
+}
+
