@@ -47,7 +47,7 @@ jobs:
       - name: Validate Cloud & Infrastructure
         id: cloud_check
         run: |
-          npm run validate-cloud
+          npm run simulate-cloud-fail
           # ---------------------------------------------------------
           # POC TESTING:
           # On PR test branches, change the line above to:
